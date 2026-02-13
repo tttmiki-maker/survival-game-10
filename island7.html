@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>無人島サバイバル - 改良リセット版</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        :root { --bg: #0d1117; --panel: #161b22; --text: #58a6ff; --accent: #1f6feb; --danger: #f85149; --thief: #a371f7; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: #c9d1d9; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: var(--panel); padding: 25px; border-radius: 12px; border: 1px solid #30363d; }
+        .btn { padding: 10px 18px; margin: 4px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; background: #21262d; color: #c9d1d9; border: 1px solid #f0f6fc1a; transition: 0.2s; }
+        .btn:hover { background: #30363d; border-color: #8b949e; }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-success { background: #238636; color: white; }
+        .btn-thief { background: var(--thief); color: white; }
+        .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .card { background: #0d1117; padding: 15px; border-radius: 8px; border: 1px solid #30363d; position: relative; }
+        .card.my-turn { border: 2px solid var(--text); }
+        .card.dead { opacity: 0.5; background: #21262d; }
+        .log-container { background: #000; height: 180px; overflow-y: scroll; padding: 12px; text-align: left; font-family: 'Consolas', monospace; border-radius: 6px; border: 1px solid #30363d; color: #7ee787; margin: 10px 0; font-size: 0.85em; }
+        .badge { font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: var(--accent); color: white; }
+        .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: center; }
+        .modal { background: var(--panel); padding: 25px; border-radius: 10px; width: 90%; max-width: 500px; border: 1px solid var(--accent); }
+        .result-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .result-table th, .result-table td { border: 1px solid #30363d; padding: 8px; text-align: center; }
+        input[type="text"], input[type="number"] { padding: 8px; border-radius: 4px; background: #0d1117; color: white; border: 1px solid #30363d; }
+        #spy-report-box { background: #1c2128; border: 1px solid #58a6ff; padding: 10px; border-radius: 8px; margin-bottom: 15px; display: none; }
+        .reset-zone { margin-top: 30px; border-top: 1px dashed #30363d; padding-top: 10px; text-align: right; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🏝️ Island Survival</h1>
+    
+    <div id="setup-ui">
+        <p>Status: <strong id="conn-status" style="color:orange;">Initializing...</strong></p>
+        <p>Your ID: <strong id="my-id" style="color:var(--text);">---</strong></p>
+        <div style="margin-bottom: 20px;"><label>名前: <input type="text" id="username" value="Player" style="width: 150px;"></label></div>
+        <div id="connection-controls">
+            <button class="btn" onclick="initHost()">部屋を作る(Host)</button>
+            <input type="text" id="join-id" placeholder="Host IDを入力">
+            <button class="btn" onclick="initGuest()">参加する(Guest)</button>
+        </div>
+        <div id="lobby-list" style="margin-top:20px; color:#8b949e; background:#0d1117; padding:10px; border-radius:5px;">
+            参加者待ち...
+        </div>
+        <button id="start-btn" class="btn btn-success" style="display:none; width:100%; margin-top:15px;" onclick="startGame()">サバイバル開始</button>
+    </div>
+
+    <div id="game-ui" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div><h2 id="day-label" style="display:inline;">Day 1</h2><span id="my-faction-badge" class="badge" style="margin-left:10px;">役職確認中</span></div>
+            <div id="phase-label" class="badge">ACTION PHASE</div>
+        </div>
+
+        <div id="spy-report-box">
+            <strong style="color:var(--text);">👁️ 監視レポート:</strong>
+            <div id="spy-report-content" style="font-size: 0.9em; margin-top:5px;">なし</div>
+        </div>
+
+        <div class="status-grid" id="status-grid"></div>
+        <div class="log-container" id="local-log"></div>
+
+        <div id="action-panel" style="display:none;">
+            <p><strong>💎 宝探し</strong></p>
+            <button class="btn" onclick="sendAction('treasure', 0.2, 0)">ちょっと(0.2)</button>
+            <button class="btn" onclick="sendAction('treasure', 0.4, 20)">普通(0.4)</button>
+            <button class="btn" onclick="sendAction('treasure', 0.6, 40)">かなり(0.6)</button>
+            <button class="btn" onclick="sendAction('treasure', 0.8, 60)">最大限(0.8)</button>
+            <p><strong>🎣 釣り・他</strong></p>
+            <button class="btn btn-success" onclick="sendAction('fish')">釣り(1-3個)</button>
+            <button class="btn" onclick="sendAction('ability')">特殊能力を得る</button>
+            <div id="thief-traps" style="display:none; border:1px solid var(--thief); padding:10px; margin-top:10px; border-radius:8px;">
+                <p style="color:var(--thief); margin-top:0;">🕵️ 盗賊専用罠</p>
+                <button class="btn btn-thief" onclick="sendAction('trap', 'food_terror')">飯テロ</button>
+                <button class="btn btn-thief" onclick="sendAction('trap', 'leg_trap')">トラバサミ</button>
+                <button class="btn btn-thief" onclick="openOverlay('theft')">窃盗</button>
+            </div>
+        </div>
+
+        <div id="rest-panel" style="display:none;"><p style="color:orange;">行動不能</p><button class="btn" onclick="sendAction('skip')">休息する</button></div>
+
+        <div id="interaction-panel" style="display:none;">
+            <h3>🤝 交流・監視・投票</h3>
+            <div id="spy-section" style="margin-bottom:15px; padding:10px; border:1px solid var(--text); border-radius:5px;">
+                <span id="spy-count-label">監視可能回数: 1</span>
+                <button id="spy-btn" class="btn" onclick="openOverlay('spy')">監視を実行する</button>
+                <small style="display:block; color:#8b949e; margin-top:5px;">※ゲーム中1回のみ可能です。</small>
+            </div>
+            <div id="trade-ui">
+                相手: <select id="give-to"></select>
+                物資: <select id="give-item"><option value="food">食料</option><option value="treasure">宝</option></select>
+                量: <input type="number" id="give-val" value="1" min="0.1" step="0.1" style="width:50px;">
+                <button class="btn" onclick="performGive()">譲渡</button>
+            </div>
+            <div id="kill-ui" style="display:none; margin-top:10px;"><span style="color:var(--danger)">💀 殺害:</span> <select id="kill-to"></select> <button class="btn btn-danger" onclick="performKill()">実行</button></div>
+            <div id="vote-section" style="background:rgba(248,81,73,0.1); padding:10px; border-radius:5px; margin-top:10px;">対象: <select id="vote-to"></select> <button class="btn btn-danger" onclick="performVote()">追放投票</button></div>
+            <button id="ready-btn" class="btn btn-success" style="width:100%; margin-top:15px;" onclick="markReady()">翌日へ</button>
+        </div>
+
+        <div id="host-reset-zone" class="reset-zone" style="display:none;">
+            <button class="btn btn-danger" onclick="emergencyReset()" style="font-size:0.7em;">⚠️ 緊急リセット(CPU削除・ロビーへ)</button>
+        </div>
+
+        <div id="result-panel" style="display:none;">
+            <h2 id="victory-msg"></h2>
+            <div id="score-breakdown" style="font-size:1.1em; color:var(--text);"></div>
+            <table class="result-table">
+                <thead><tr><th>名前</th><th>陣営</th><th>状態</th><th>食料</th><th>宝</th><th>能力</th></tr></thead>
+                <tbody id="final-body"></tbody>
+            </table>
+            <button class="btn btn-success" style="margin-top:20px; width:100%;" onclick="emergencyReset()">ホストとしてロビーに戻る</button>
+            <p style="font-size:0.8em; color:#8b949e;">(ゲストはホストがリセットするのを待つか、リロードしてください)</p>
+        </div>
+    </div>
+</div>
+
+<div id="spy-overlay" class="overlay"><div class="modal"><h3>監視対象を選択</h3><div id="spy-list"></div><button class="btn" onclick="closeOverlay()">キャンセル</button></div></div>
+<div id="theft-overlay" class="overlay"><div class="modal"><h3>窃盗対象</h3><div id="theft-list"></div><button class="btn" onclick="closeOverlay()">戻る</button></div></div>
+
+<script>
+    const ABILITIES = ["強靭な身体", "ベテラン", "釣り職人", "失敗保険", "ストーカー体質", "ゾンビ", "ギブアンドテイク"];
+    let peer = new Peer({ host: '0.peerjs.com', port: 443, secure: true, debug: 1 });
+    let myId, connections = [], hostConn = null, isHost = false;
+    let gameState = { 
+        players: [], day: 1, phase: 'setup', turnIdx: 0, 
+        traps: { foodTerror: false, legTrap: false, nextLegTrap: false },
+        history: [], resultData: null
+    };
+
+    let mySpyUsed = false;
+    let currentSpyReport = "";
+
+    peer.on('open', id => { 
+        myId = id; document.getElementById('my-id').innerText = id; 
+        document.getElementById('conn-status').innerText = "Online"; document.getElementById('conn-status').style.color = "#7ee787"; 
+    });
+
+    peer.on('connection', conn => { 
+        if (isHost) { 
+            connections.push(conn); 
+            conn.on('data', d => handleData(d, conn)); 
+            setTimeout(() => sync(), 500);
+        } 
+    });
+
+    function initHost() { 
+        isHost = true; 
+        addPlayer(myId, document.getElementById('username').value || "Host"); 
+        document.getElementById('start-btn').style.display = 'block'; 
+        document.getElementById('connection-controls').style.display = 'none'; 
+        document.getElementById('host-reset-zone').style.display = 'block';
+        updateUI();
+    }
+
+    function initGuest() { 
+        const tid = document.getElementById('join-id').value; 
+        const name = document.getElementById('username').value || "Guest";
+        if(!tid) return; 
+        hostConn = peer.connect(tid); 
+        hostConn.on('open', () => { 
+            document.getElementById('connection-controls').style.display = 'none'; 
+            hostConn.send({ type: 'join', name: name }); 
+        });
+        hostConn.on('data', d => handleData(d)); 
+    }
+    
+    function sync() { 
+        if (isHost) connections.forEach(c => c.send({ type: 'sync', state: gameState })); 
+        handleData({ type: 'sync', state: gameState }); 
+    }
+
+    function handleData(data, conn) {
+        if (isHost && data.type === 'join') { addPlayer(conn.peer, data.name); sync(); }
+        if (data.type === 'sync') { gameState = data.state; updateUI(); }
+        if (isHost) {
+            if (data.type === 'action') processAction(data);
+            if (data.type === 'ready') { const p = gameState.players.find(x => x.id === data.pId); if(p) p.ready = true; checkPhaseEnd(); }
+            if (data.type === 'give') {
+                const f = gameState.players.find(x => x.id === data.from); const t = gameState.players.find(x => x.id === data.to);
+                if(f[data.item] >= data.val) { 
+                    f[data.item] -= data.val; t[data.item] += data.val; 
+                    pushLog(`${f.name}が${t.name}へ譲渡を行った`, "#58a6ff", f.id);
+                    pushLog(`${f.name}から物資を受け取った`, "#58a6ff", t.id);
+                    sync(); 
+                }
+            }
+            if (data.type === 'kill') {
+                const f = gameState.players.find(x => x.id === data.from); const t = gameState.players.find(x => x.id === data.to);
+                if (!f.killedToday) { 
+                    f.killedToday = true; 
+                    if (t.ability === "強靭な身体") pushLog(`💀 襲撃を弾き返した！`, "#7ee787", t.id); 
+                    else { t.alive = false; pushLog(`💀 事件：誰かが${t.name}を殺害した`, "#f85149"); } 
+                    sync(); 
+                }
+            }
+            if (data.type === 'vote') {
+                const target = gameState.players.find(x => x.id === data.to);
+                if (target.faction === 'thief') { pushLog(`🎯 追放成功！${target.name}は盗賊だった。`, "gold"); finishGame("research_win_vote"); }
+                else { pushLog(`🚫 追放失敗... ${target.name}は無実だった。`, "red"); finishGame("thief_win_vote"); }
+            }
+            if (data.type === 'spy_request') {
+                const target = gameState.players.find(x => x.id === data.targetId);
+                const act = (target.yesterdayAction === "釣り" || target.yesterdayAction === "宝探し" || target.yesterdayAction === "罠設置") ? target.yesterdayAction : "不明/未行動";
+                const report = `【Day ${gameState.day} 監視】 ${target.name} | 食料:${target.food.toFixed(1)} | 宝:${target.treasure.toFixed(1)} | 能力:${target.ability} | 昨日:${act}`;
+                if (conn) conn.send({ type: 'spy_result', report: report });
+                else handleData({ type: 'spy_result', report: report });
+            }
+        }
+        if (data.type === 'spy_result') { currentSpyReport = data.report; mySpyUsed = true; updateUI(); }
+    }
+
+    function addPlayer(id, name) {
+        gameState.players.push({ id, name, isCPU: false, food: 3, treasure: 0, ap: 1, ability: "なし", alive: true, ready: false, faction: 'research', lastAction: "未行動", yesterdayAction: "未行動", failFlag: false, killedToday: false });
+    }
+
+    function startGame() {
+        while (gameState.players.length < 4) {
+            let cpuId = "CPU"+Math.random();
+            gameState.players.push({ id: cpuId, name: "CPU-"+(gameState.players.length+1), isCPU: true, food: 3, treasure: 0, ap: 1, ability: "なし", alive: true, ready: false, faction: 'research', lastAction: "未行動", yesterdayAction: "未行動", failFlag: false, killedToday: false });
+        }
+        gameState.players[Math.floor(Math.random() * gameState.players.length)].faction = 'thief';
+        gameState.phase = 'action'; gameState.history = []; pushLog("=== サバイバル開始 ===", "gold"); sync();
+    }
+
+    function emergencyReset() {
+        if (!isHost) return;
+        if (!confirm("CPUを削除し、ログを全消去してロビーに戻りますか？")) return;
+        
+        gameState.phase = 'setup';
+        gameState.day = 1;
+        gameState.history = []; // ログを完全にリセット
+        gameState.turnIdx = 0;
+        gameState.resultData = null;
+        
+        // CPUを除去し、人間プレイヤーのステータスを初期化
+        gameState.players = gameState.players.filter(p => !p.isCPU);
+        gameState.players.forEach(p => {
+            p.food = 3; p.treasure = 0; p.ap = 1; p.ability = "なし";
+            p.alive = true; p.ready = false; p.faction = 'research';
+            p.lastAction = "未行動"; p.yesterdayAction = "未行動";
+            p.failFlag = false; p.killedToday = false;
+        });
+
+        mySpyUsed = false;
+        currentSpyReport = "";
+        sync();
+    }
+
+    function processAction(data) {
+        const p = gameState.players.find(x => x.id === (data.playerId || gameState.players[gameState.turnIdx].id));
+        if(!p) return;
+        p.ap = 0;
+        if (data.action === 'treasure') {
+            let fp = data.prob; if (gameState.traps.legTrap) fp *= 2;
+            if (Math.random() * 100 < fp) { p.failFlag = true; p.lastAction = "大失敗"; pushLog(`宝探しで大失敗した！`, "#f85149", p.id); }
+            else { p.treasure += data.val; p.lastAction = "宝探し"; pushLog(`宝を手に入れた(+${data.val})`, "#7ee787", p.id); }
+        } else if (data.action === 'fish') {
+            let count = Math.floor(Math.random()*3)+1; p.food += count; p.lastAction = "釣り"; pushLog(`魚を${count}匹釣った`, "#7ee787", p.id);
+        } else if (data.action === 'ability') {
+            p.ability = ABILITIES[Math.floor(Math.random()*ABILITIES.length)]; p.lastAction = "能力変更"; pushLog(`能力【${p.ability}】を得た`, "#7ee787", p.id);
+        } else if (data.action === 'trap') {
+            if (data.val === 'food_terror') gameState.traps.foodTerror = true;
+            else if (data.val === 'leg_trap') gameState.traps.nextLegTrap = true;
+            p.lastAction = "罠設置"; pushLog(`罠を設置した`, "#a371f7", p.id);
+        }
+        if (isHost) sync();
+        nextTurn();
+    }
+
+    function nextTurn() {
+        gameState.turnIdx++;
+        if (gameState.turnIdx >= gameState.players.length) {
+            gameState.phase = 'interaction';
+            gameState.players.forEach(p => p.ready = (p.isCPU || !p.alive));
+            sync(); return;
+        }
+        const n = gameState.players[gameState.turnIdx];
+        if (n.alive && n.ap > 0) { if (n.isCPU) setTimeout(() => processAction({ action: 'fish', playerId: n.id }), 500); else sync(); }
+        else nextTurn();
+    }
+
+    function checkPhaseEnd() { if (gameState.players.every(p => p.ready)) endDay(); else sync(); }
+
+    function endDay() {
+        gameState.players.forEach(p => {
+            if (!p.alive) return;
+            let con = (p.ability === "強靭な身体") ? 1.5 : 1.0;
+            if (gameState.traps.foodTerror) con += 1.0;
+            p.food -= con; 
+            if (p.food < 0) { p.alive = false; pushLog(`${p.name}が餓死した`, "red"); }
+        });
+        if (gameState.day >= 10) return finishGame("timeup");
+        gameState.day++; gameState.phase = 'action'; gameState.turnIdx = -1;
+        gameState.traps.foodTerror = false; gameState.traps.legTrap = gameState.traps.nextLegTrap; gameState.traps.nextLegTrap = false;
+        gameState.players.forEach(p => { p.yesterdayAction = p.lastAction; p.lastAction = "未行動"; p.ready = false; p.killedToday = false; if (p.alive) { p.ap = p.failFlag ? 0 : 1; p.failFlag = false; } });
+        pushLog(`--- Day ${gameState.day} 開始 ---`, "gold");
+        nextTurn();
+    }
+
+    function finishGame(reason) {
+        let surRes = 0, resTr = 0;
+        gameState.players.forEach(p => { if (p.faction === 'research' && p.alive) { surRes++; resTr += p.treasure; } });
+        let score = (surRes * 10) + (resTr * 6);
+        gameState.resultData = { 
+            msg: score >= 50 ? "🎉 調査隊の勝利！" : "💀 盗賊の勝利！", 
+            score: score.toFixed(1), 
+            players: JSON.parse(JSON.stringify(gameState.players)) // 全員の最終データをクローン
+        };
+        gameState.phase = 'result'; 
+        sync();
+    }
+
+    function updateUI() {
+        const lobbyList = document.getElementById('lobby-list');
+        lobbyList.innerHTML = "<strong>現在の参加者:</strong><br>" + gameState.players.map(p => `・${p.name} ${p.id === myId ? '(自分)' : ''} ${p.isCPU ? '(CPU)' : ''}`).join("<br>");
+
+        if (gameState.phase === 'setup') {
+            document.getElementById('setup-ui').style.display = 'block';
+            document.getElementById('game-ui').style.display = 'none';
+            document.getElementById('result-panel').style.display = 'none';
+            return;
+        }
+
+        document.getElementById('setup-ui').style.display = 'none'; 
+        document.getElementById('game-ui').style.display = 'block';
+        document.getElementById('day-label').innerText = "Day " + gameState.day;
+        
+        const me = gameState.players.find(x => x.id === myId);
+        if (!me) return;
+
+        document.getElementById('my-faction-badge').innerText = me.faction === 'thief' ? "🕵️ 盗賊" : "🔍 調査隊";
+        document.getElementById('my-faction-badge').style.background = me.faction === 'thief' ? "var(--thief)" : "var(--accent)";
+
+        if (currentSpyReport) {
+            document.getElementById('spy-report-box').style.display = 'block';
+            document.getElementById('spy-report-content').innerText = currentSpyReport;
+        } else {
+            document.getElementById('spy-report-box').style.display = 'none';
+        }
+
+        const grid = document.getElementById('status-grid'); grid.innerHTML = "";
+        gameState.players.forEach((p, i) => {
+            const act = (gameState.phase === 'action' && i === gameState.turnIdx);
+            grid.innerHTML += `<div class="card ${act ? 'my-turn' : ''} ${p.alive ? '' : 'dead'}">
+                <strong>${p.name}</strong> ${p.ready ? '✅' : ''}<br>${p.alive ? '❤️ 生存' : '💀 死亡'}<br>
+                ${p.id === myId ? `🍖:${p.food.toFixed(1)} 💎:${p.treasure.toFixed(1)}<br><small>${p.ability}</small>` : `🍖:?? 💎:??`}
+            </div>`;
+        });
+
+        document.getElementById('local-log').innerHTML = gameState.history
+            .filter(h => h.to === null || h.to === myId)
+            .map(h => `<div style="color:${h.color}">[Day${h.day}] ${h.msg}</div>`).join("");
+        document.getElementById('local-log').scrollTop = 99999;
+
+        const isTurn = (gameState.phase === 'action' && gameState.players[gameState.turnIdx] && gameState.players[gameState.turnIdx].id === myId);
+        document.getElementById('action-panel').style.display = (isTurn && me.alive && me.ap > 0) ? 'block' : 'none';
+        document.getElementById('rest-panel').style.display = (isTurn && (!me.alive || me.ap <= 0)) ? 'block' : 'none';
+        document.getElementById('thief-traps').style.display = (me.faction === 'thief') ? 'block' : 'none';
+
+        const intPanel = document.getElementById('interaction-panel');
+        if (gameState.phase === 'interaction' && me.alive) {
+            intPanel.style.display = 'block';
+            const gTo = document.getElementById('give-to'), kTo = document.getElementById('kill-to'), vTo = document.getElementById('vote-to');
+            gTo.innerHTML = kTo.innerHTML = vTo.innerHTML = "";
+            gameState.players.forEach(p => { if(p.id !== myId && p.alive) { const o = `<option value="${p.id}">${p.name}</option>`; gTo.innerHTML += o; kTo.innerHTML += o; vTo.innerHTML += o; } });
+            document.getElementById('spy-count-label').innerText = `監視可能回数: ${mySpyUsed ? 0 : 1}`;
+            document.getElementById('spy-btn').disabled = mySpyUsed;
+        } else {
+            intPanel.style.display = 'none';
+        }
+
+        if (gameState.phase === 'result' && gameState.resultData) {
+            const rd = gameState.resultData;
+            document.getElementById('victory-msg').innerText = rd.msg;
+            document.getElementById('score-breakdown').innerText = `最終スコア: ${rd.score}`;
+            const body = document.getElementById('final-body'); body.innerHTML = "";
+            rd.players.forEach(p => body.innerHTML += `<tr><td>${p.name}</td><td>${p.faction==='thief'?'盗賊':'調査隊'}</td><td>${p.alive?'生存':'死亡'}</td><td>${p.food.toFixed(1)}</td><td>${p.treasure.toFixed(1)}</td><td>${p.ability}</td></tr>`);
+            document.getElementById('result-panel').style.display = 'block';
+            // ゲーム画面の他の要素を隠す
+            document.getElementById('status-grid').style.display = 'none';
+            document.getElementById('interaction-panel').style.display = 'none';
+            document.getElementById('action-panel').style.display = 'none';
+        } else {
+            document.getElementById('status-grid').style.display = 'grid';
+            document.getElementById('result-panel').style.display = 'none';
+        }
+    }
+
+    function pushLog(msg, color, toId = null) { gameState.history.push({ day: gameState.day, msg, color, to: toId }); }
+    function sendAction(type, v1, v2) { const p = { type: 'action', playerId: myId, action: type, val: v1, prob: v2 }; if (isHost) processAction(p); else hostConn.send(p); }
+    function markReady() { if (isHost) { gameState.players.find(x => x.id === myId).ready = true; checkPhaseEnd(); } else hostConn.send({ type: 'ready', pId: myId }); }
+    
+    function executeSpy(targetId) {
+        if (isHost) handleData({ type: 'spy_request', targetId: targetId }); else hostConn.send({ type: 'spy_request', targetId: targetId });
+        closeOverlay();
+    }
+    
+    function openOverlay(id) { 
+        document.getElementById(id + '-overlay').style.display = 'flex'; const list = document.getElementById(id + '-list'); list.innerHTML = ""; 
+        gameState.players.forEach(p => { if (p.id !== myId && p.alive) { 
+            if (id === 'spy') list.innerHTML += `<button class="btn" onclick="executeSpy('${p.id}')">${p.name}</button>`; 
+            if (id === 'theft') list.innerHTML += `<button class="btn btn-thief" onclick="sendAction('trap', 'theft', '${p.id}')">盗む: ${p.name}</button>`; 
+        }}); 
+    }
+    function closeOverlay() { document.querySelectorAll('.overlay').forEach(o => o.style.display = 'none'); }
+    function performGive() { const v = parseFloat(document.getElementById('give-val').value); const p = { type: 'give', from: myId, to: document.getElementById('give-to').value, item: document.getElementById('give-item').value, val: v }; if (isHost) handleData(p); else hostConn.send(p); }
+    function performKill() { const p = { type: 'kill', from: myId, to: document.getElementById('kill-to').value }; if (isHost) handleData(p); else hostConn.send(p); }
+    function performVote() { const p = { type: 'vote', to: document.getElementById('vote-to').value }; if (isHost) handleData(p); else hostConn.send(p); }
+</script>
+</body>
+</html>
